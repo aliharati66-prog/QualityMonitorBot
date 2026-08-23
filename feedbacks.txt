@@ -1,0 +1,4 @@
+2026-08-21 18:19 | Role: teacher | Class:  | StudentId: 156246610 | Answers: 1=5, 2=5, 3=4, 4=3, 5=5, 6=4, 7=3, 9=4, 10=4, 11=3,  | Strengths: S8,S5,S6 | FreeText: سلامتی
+2026-08-23 08:21 | Role: teacher | Class:  | StudentId: 156246610 | Answers: 1=4, 2=4, 3=4, 4=4, 5=4, 6=5, 7=5, 9=3, 10=3, 11=3,  | FreeText: شصی
+2026-08-23 08:21 | Role:  | Class:  | Answers: 1=5, 2=4, 3=3, 4=2, 5=5, 6=5, 7=5,  | FreeText: Dd
+2026-08-23 08:43 | Role: student | Class: EB-SM-ZZ | Answers: 1=4, 2=2, 3=5, 4=2, 5=5, 6=2, 7=4,  | FreeText: Bzbz
