@@ -10,25 +10,27 @@ class Program
     private static string BotToken = "8840542620:AAFH7qbaeB7JAXK1wCMFYEawbBDPihKJh-0";
     private static TelegramBotClient bot = null!;
     private static ConcurrentDictionary<long, UserState> UserStates = new();
-    // لیست آیدی عددی Staff (مدرس + ادمین + کارشناس)
+
+    // لیست Staff (مدرس + ادمین + کارشناس)
     private static HashSet<long> StaffIds = new HashSet<long>()
-{
-    107592700,   // علی هراتی‌بندی (مدرس)
-    // اینجا آیدی بقیه Staff را اضافه کن
-};
+    {
+        107592700,   // علی هراتی‌بندی
+        // آیدی بقیه Staff را اینجا اضافه کن
+    };
+
     class ClassInfo
     {
         public long GroupChatId;
-        public string ClassCode;
+        public string ClassCode = "";
         public long TeacherTelegramId;
-        public string TeacherName;
+        public string TeacherName = "";
         public List<StudentInfo> Students = new List<StudentInfo>();
     }
 
     class StudentInfo
     {
         public long TelegramId;
-        public string FullName;
+        public string FullName = "";
     }
 
     static List<ClassInfo> Classes = new List<ClassInfo>();
@@ -36,11 +38,13 @@ class Program
     static async Task Main()
     {
         // ---------- کلاس نمونه ----------
-        var sampleClass = new ClassInfo();
-        sampleClass.GroupChatId = -1004349341642;
-        sampleClass.ClassCode = "EB-SM-ZZ";
-        sampleClass.TeacherTelegramId = 107592700;
-        sampleClass.TeacherName = "Ali Haratibandi";
+        var sampleClass = new ClassInfo
+        {
+            GroupChatId = -1004349341642,
+            ClassCode = "EB-SM-ZZ",
+            TeacherTelegramId = 107592700,
+            TeacherName = "Ali Haratibandi"
+        };
         sampleClass.Students.Add(new StudentInfo { TelegramId = 156246610, FullName = "Maryam" });
         Classes.Add(sampleClass);
 
@@ -52,76 +56,64 @@ class Program
         bot.OnUpdate += OnUpdate;
         bot.OnError += (ex, src) => { Console.WriteLine(ex.Message); return Task.CompletedTask; };
 
-        // نگه داشتن برنامه همیشه روشن
+        // برای Railway و سرورهای ابری
         await Task.Delay(Timeout.Infinite);
     }
 
     static async Task OnMessage(Message msg, UpdateType type)
     {
-        if (msg.Text == null) return;
+        if (msg.Text == null || msg.From == null) return;
 
         long chatId = msg.Chat.Id;
+        long userId = msg.From.Id;
         string text = msg.Text.Trim();
+        string fullName = (msg.From.FirstName ?? "") + (string.IsNullOrEmpty(msg.From.LastName) ? "" : " " + msg.From.LastName);
 
-        Console.WriteLine("ChatId: " + chatId + " | UserId: " + msg.From.Id + " | From: " + (msg.From?.FirstName ?? "Unknown") + " | Text: " + text);
-        // ثبت خودکار زبان‌آموز در گروه
-        if ((msg.Chat.Type == ChatType.Group || msg.Chat.Type == ChatType.Supergroup) && msg.From != null)
+        Console.WriteLine($"ChatId: {chatId} | UserId: {userId} | From: {fullName} | Text: {text}");
+
+        // === ثبت خودکار زبان‌آموز در گروه ===
+        if (msg.Chat.Type == ChatType.Group || msg.Chat.Type == ChatType.Supergroup)
         {
-            long userId = msg.From.Id;
-            string fullName = (msg.From.FirstName ?? "") + (msg.From.LastName != null ? " " + msg.From.LastName : "");
-
             var currentClass = Classes.FirstOrDefault(c => c.GroupChatId == chatId);
-
-            if (currentClass != null)
+            if (currentClass != null && !StaffIds.Contains(userId))
             {
-                // اگر Staff نباشد
-                if (!StaffIds.Contains(userId))
+                if (!currentClass.Students.Any(s => s.TelegramId == userId))
                 {
-                    // اگر قبلاً ثبت نشده باشد
-                    if (!currentClass.Students.Any(s => s.TelegramId == userId))
+                    currentClass.Students.Add(new StudentInfo
                     {
-                        currentClass.Students.Add(new StudentInfo
-                        {
-                            TelegramId = userId,
-                            FullName = fullName.Trim()
-                        });
-
-                        Console.WriteLine("زبان‌آموز جدید ثبت شد: " + fullName + " (" + userId + ")");
-                    }
+                        TelegramId = userId,
+                        FullName = fullName.Trim()
+                    });
+                    Console.WriteLine("زبان‌آموز جدید ثبت شد: " + fullName + " (" + userId + ")");
                 }
             }
         }
+
+        // مدیریت نظر متنی
         if (UserStates.TryGetValue(chatId, out var state) && state.WaitingForText)
         {
             state.FreeText = text.ToLower() == "خیر" ? null : text;
             state.WaitingForText = false;
-
-            // ذخیره فیدبک در فایل
-            SaveFeedback(state, chatId);
-
+            SaveFeedback(state);
             await bot.SendMessage(chatId, "✅ فیدبک شما ثبت شد. متشکریم!");
             UserStates.TryRemove(chatId, out _);
             return;
         }
 
+        // دستور /start با deep link
         if (text.StartsWith("/start"))
         {
-            // بررسی اینکه آیا از طریق دکمه فیدبک آمده یا نه
             if (text.Contains("feedback_"))
             {
                 string classCode = text.Replace("/start feedback_", "").Trim();
-
                 var currentClass = Classes.FirstOrDefault(c => c.ClassCode == classCode);
-
                 if (currentClass == null)
                 {
                     await bot.SendMessage(chatId, "کلاس مورد نظر پیدا نشد.");
                     return;
                 }
 
-                long userId = msg.From.Id;
-
-                if (userId == currentClass.TeacherTelegramId)
+                if (userId == currentClass.TeacherTelegramId || StaffIds.Contains(userId))
                 {
                     // مدرس است
                     await ShowStudentList(chatId, currentClass);
@@ -142,7 +134,7 @@ class Program
                 }
                 else
                 {
-                    await bot.SendMessage(chatId, "شما در لیست این کلاس ثبت نشده‌اید.");
+                    await bot.SendMessage(chatId, "شما در لیست این کلاس ثبت نشده‌اید. لطفاً یک پیام در گروه کلاس بفرستید.");
                 }
             }
             else
@@ -152,7 +144,6 @@ class Program
         }
         else if (text == "/setupbutton")
         {
-            // فقط در گروه کار کند
             if (msg.Chat.Type != ChatType.Group && msg.Chat.Type != ChatType.Supergroup)
             {
                 await bot.SendMessage(chatId, "این دستور فقط داخل گروه کلاس قابل استفاده است.");
@@ -166,39 +157,36 @@ class Program
                 return;
             }
 
+            var me = await bot.GetMe();
             var keyboard = new InlineKeyboardMarkup(new[]
             {
-        new[]
-        {
-            InlineKeyboardButton.WithUrl("📝 ثبت فیدبک", "https://t.me/" + (await bot.GetMe()).Username + "?start=feedback_" + currentClass.ClassCode)
-        }
-    });
+                new[]
+                {
+                    InlineKeyboardButton.WithUrl("📝 ثبت فیدبک", $"https://t.me/{me.Username}?start=feedback_{currentClass.ClassCode}")
+                }
+            });
 
-            await bot.SendMessage(chatId,
-                "برای ثبت فیدبک روی دکمه زیر کلیک کنید:",
-                replyMarkup: keyboard);
+            await bot.SendMessage(chatId, "برای ثبت فیدبک روی دکمه زیر کلیک کنید:", replyMarkup: keyboard);
         }
         else if (text == "/feedback")
         {
-            // اگر پیام در گروه باشد
             if (msg.Chat.Type == ChatType.Group || msg.Chat.Type == ChatType.Supergroup)
             {
                 var currentClass = Classes.FirstOrDefault(c => c.GroupChatId == chatId);
-
                 if (currentClass == null)
                 {
                     await bot.SendMessage(chatId, "این گروه در سیستم ثبت نشده است.");
                     return;
                 }
 
-                // دکمه برای رفتن به چت خصوصی
+                var me = await bot.GetMe();
                 var keyboard = new InlineKeyboardMarkup(new[]
                 {
-            new[]
-            {
-                InlineKeyboardButton.WithUrl("شروع فیدبک (خصوصی)", "https://t.me/" + (await bot.GetMe()).Username + "?start=feedback_" + currentClass.ClassCode)
-            }
-        });
+                    new[]
+                    {
+                        InlineKeyboardButton.WithUrl("شروع فیدبک (خصوصی)", $"https://t.me/{me.Username}?start=feedback_{currentClass.ClassCode}")
+                    }
+                });
 
                 await bot.SendMessage(chatId,
                     "برای جلوگیری از شلوغی گروه، لطفاً روی دکمه زیر کلیک کنید تا فیدبک را در چت خصوصی ادامه دهید:",
@@ -206,14 +194,12 @@ class Program
             }
             else
             {
-                // اگر در چت خصوصی باشد
                 await bot.SendMessage(chatId, "لطفاً ابتدا از داخل گروه کلاس دستور /feedback را بفرستید.");
             }
         }
         else
         {
-            // فقط در چت خصوصی پیام ناشناخته را جواب بده
-            // در گروه هیچ جوابی نده
+            // فقط در چت خصوصی جواب بده
             if (msg.Chat.Type == ChatType.Private)
             {
                 await bot.SendMessage(chatId, "دستور ناشناخته است. از /feedback استفاده کنید.");
@@ -228,7 +214,7 @@ class Program
         var query = update.CallbackQuery;
         await bot.AnswerCallbackQuery(query.Id);
 
-        long chatId = query.Message.Chat.Id;
+        long chatId = query.Message!.Chat.Id;
         string data = query.Data ?? "";
 
         if (!UserStates.ContainsKey(chatId))
@@ -242,8 +228,7 @@ class Program
             state.Role = "teacher";
             state.SelectedStudentId = studentId;
             state.CurrentStep = 1;
-
-            await bot.SendMessage(chatId, "شروع ارزیابی زبان‌آموز انتخاب شده:");
+            await bot.SendMessage(chatId, "شروع ارزیابی زبان‌آموز انتخاب‌شده:");
             await SendTeacherQuestion(chatId, 1);
         }
         else if (data.StartsWith("stu_"))
@@ -295,75 +280,80 @@ class Program
     {
         if (classInfo.Students.Count == 0)
         {
-            await bot.SendMessage(chatId, "هیچ زبان‌آموزی ثبت نشده است.");
+            await bot.SendMessage(chatId, "هیچ زبان‌آموزی هنوز ثبت نشده است.\nاز زبان‌آموزان بخواهید یک پیام در گروه بفرستند.");
             return;
         }
 
         var buttons = new List<InlineKeyboardButton[]>();
         foreach (var student in classInfo.Students)
         {
-            buttons.Add(new[] { InlineKeyboardButton.WithCallbackData(student.FullName, "select_student_" + student.TelegramId) });
+            buttons.Add(new[] {
+                InlineKeyboardButton.WithCallbackData(student.FullName, "select_student_" + student.TelegramId)
+            });
         }
 
-        await bot.SendMessage(chatId, "زبان‌آموزی که می‌خواهید فیدبک دهید را انتخاب کنید:", replyMarkup: new InlineKeyboardMarkup(buttons));
+        await bot.SendMessage(chatId, "زبان‌آموزی که می‌خواهید فیدبک دهید را انتخاب کنید:",
+            replyMarkup: new InlineKeyboardMarkup(buttons));
     }
 
     static async Task SendStudentQuestion(long chatId, int step)
     {
-        string text = "";
-        switch (step)
+        string text = step switch
         {
-            case 1: text = "1. سطح دانش مدرس\n\n1. ضعیف\n2. متوسط رو به پایین\n3. قابل قبول\n4. خوب\n5. عالی"; break;
-            case 2: text = "2. فضای یادگیری کلاس\n\n1. یکنواخت\n2. ایستا\n3. متعادل\n4. پویا\n5. بسیار محرک"; break;
-            case 3: text = "3. پیگیری تکالیف\n\n1. عدم پیگیری\n2. نامنظم\n3. استاندارد\n4. دقیق\n5. تحلیلی"; break;
-            case 4: text = "4. جو صمیمانه کلاس\n\n1. بسیار رسمی\n2. خشک\n3. معتدل\n4. گرم\n5. بسیار صمیمی"; break;
-            case 5: text = "5. استفاده از زبان فارسی\n\n1. بسیار زیاد\n2. زیاد\n3. متعادل\n4. کم\n5. بسیار کم"; break;
-            case 6: text = "6. اخلاق و رفتار مدرس\n\n1. نامناسب\n2. ضعیف\n3. متعادل\n4. خوب\n5. الگو"; break;
-            case 7: text = "7. انتخاب مدرس برای ترم بعد\n\n1. قطعا خیر\n2. احتمالا خیر\n3. نظری ندارم\n4. احتمالا بله\n5. قطعا بله"; break;
-        }
+            1 => "۱. سطح دانش مدرس\n\n۱. ضعیف\n۲. متوسط رو به پایین\n۳. قابل قبول\n۴. خوب\n۵. عالی",
+            2 => "۲. فضای یادگیری کلاس\n\n۱. یکنواخت\n۲. ایستا\n۳. متعادل\n۴. پویا\n۵. بسیار محرک",
+            3 => "۳. پیگیری تکالیف\n\n۱. عدم پیگیری\n۲. نامنظم\n۳. استاندارد\n۴. دقیق\n۵. تحلیلی",
+            4 => "۴. جو صمیمانه کلاس\n\n۱. بسیار رسمی\n۲. خشک\n۳. معتدل\n۴. گرم\n۵. بسیار صمیمی",
+            5 => "۵. استفاده از زبان فارسی\n\n۱. بسیار زیاد\n۲. زیاد\n۳. متعادل\n۴. کم\n۵. بسیار کم",
+            6 => "۶. اخلاق و رفتار مدرس\n\n۱. نامناسب\n۲. ضعیف\n۳. متعادل\n۴. خوب\n۵. الگو",
+            7 => "۷. انتخاب مدرس برای ترم بعد\n\n۱. قطعاً خیر\n۲. احتمالاً خیر\n۳. نظری ندارم\n۴. احتمالاً بله\n۵. قطعاً بله",
+            _ => ""
+        };
 
         var keyboard = new InlineKeyboardMarkup(new[]
         {
             new[]
             {
-                InlineKeyboardButton.WithCallbackData("1", "stu_" + step + "_1"),
-                InlineKeyboardButton.WithCallbackData("2", "stu_" + step + "_2"),
-                InlineKeyboardButton.WithCallbackData("3", "stu_" + step + "_3"),
-                InlineKeyboardButton.WithCallbackData("4", "stu_" + step + "_4"),
-                InlineKeyboardButton.WithCallbackData("5", "stu_" + step + "_5")
+                InlineKeyboardButton.WithCallbackData("۱", $"stu_{step}_1"),
+                InlineKeyboardButton.WithCallbackData("۲", $"stu_{step}_2"),
+                InlineKeyboardButton.WithCallbackData("۳", $"stu_{step}_3"),
+                InlineKeyboardButton.WithCallbackData("۴", $"stu_{step}_4"),
+                InlineKeyboardButton.WithCallbackData("۵", $"stu_{step}_5")
             }
         });
+
         await bot.SendMessage(chatId, text, replyMarkup: keyboard);
     }
 
     static async Task SendTeacherQuestion(long chatId, int step)
     {
-        string text = "";
-        switch (step)
+        string text = step switch
         {
-            case 1: text = "1. پیشرفت کلی\n\n1. عدم پیشرفت\n2. کند\n3. در حد انتظار\n4. سریع‌تر\n5. چشمگیر"; break;
-            case 2: text = "2. Speaking\n\n1. ضعیف\n2. متوسط پایین\n3. قابل قبول\n4. خوب\n5. عالی"; break;
-            case 3: text = "3. Listening\n\n1. ضعیف\n2. متوسط پایین\n3. قابل قبول\n4. خوب\n5. عالی"; break;
-            case 4: text = "4. Reading\n\n1. ضعیف\n2. متوسط پایین\n3. قابل قبول\n4. خوب\n5. عالی"; break;
-            case 5: text = "5. Writing\n\n1. ضعیف\n2. متوسط پایین\n3. قابل قبول\n4. خوب\n5. عالی"; break;
-            case 6: text = "6. Vocabulary\n\n1. ضعیف\n2. متوسط پایین\n3. قابل قبول\n4. خوب\n5. عالی"; break;
-            case 7: text = "7. Grammar\n\n1. ضعیف\n2. متوسط پایین\n3. قابل قبول\n4. خوب\n5. عالی"; break;
-            case 9: text = "9. Area for Improvement\n\n1. نیاز فوری\n2. نقاط ضعف مشخص\n3. نیاز به تمرین\n4. ضعف جزئی\n5. ضعف عمده ندارد"; break;
-            case 10: text = "10. Participation & Attitude\n\n1. عدم علاقه\n2. منفعل\n3. معمول\n4. مشتاق\n5. بسیار مشتاق"; break;
-            case 11: text = "11. Review & Assessment\n\n1. عدم آمادگی\n2. ناقص\n3. متوسط\n4. کامل\n5. فراتر از انتظار"; break;
-        }
+            1 => "۱. پیشرفت کلی\n\n۱. عدم پیشرفت\n۲. کند\n۳. در حد انتظار\n۴. سریع‌تر\n۵. چشمگیر",
+            2 => "۲. Speaking\n\n۱. ضعیف\n۲. متوسط پایین\n۳. قابل قبول\n۴. خوب\n۵. عالی",
+            3 => "۳. Listening\n\n۱. ضعیف\n۲. متوسط پایین\n۳. قابل قبول\n۴. خوب\n۵. عالی",
+            4 => "۴. Reading\n\n۱. ضعیف\n۲. متوسط پایین\n۳. قابل قبول\n۴. خوب\n۵. عالی",
+            5 => "۵. Writing\n\n۱. ضعیف\n۲. متوسط پایین\n۳. قابل قبول\n۴. خوب\n۵. عالی",
+            6 => "۶. Vocabulary\n\n۱. ضعیف\n۲. متوسط پایین\n۳. قابل قبول\n۴. خوب\n۵. عالی",
+            7 => "۷. Grammar\n\n۱. ضعیف\n۲. متوسط پایین\n۳. قابل قبول\n۴. خوب\n۵. عالی",
+            9 => "۹. Area for Improvement\n\n۱. نیاز فوری\n۲. نقاط ضعف مشخص\n۳. نیاز به تمرین\n۴. ضعف جزئی\n۵. ضعف عمده ندارد",
+            10 => "۱۰. Participation & Attitude\n\n۱. عدم علاقه\n۲. منفعل\n۳. معمول\n۴. مشتاق\n۵. بسیار مشتاق",
+            11 => "۱۱. Review & Assessment\n\n۱. عدم آمادگی\n۲. ناقص\n۳. متوسط\n۴. کامل\n۵. فراتر از انتظار",
+            _ => ""
+        };
 
         var keyboard = new InlineKeyboardMarkup(new[]
         {
             new[]
             {
-                InlineKeyboardButton.WithCallbackData("1", "tch_" + step + "_1"),
-                InlineKeyboardButton.WithCallbackData("2", "tch_" + step + "_2"),
-                InlineKeyboardButton.WithCallbackData("3", "tch_" + step + "_3"),
-                InlineKeyboardButton.WithCallbackData("4", "tch_" + step + "_4"),
-                InlineKeyboardButton.WithCallbackData("5", "tch_" + step + "_5")
+                InlineKeyboardButton.WithCallbackData("۱", $"tch_{step}_1"),
+                InlineKeyboardButton.WithCallbackData("۲", $"tch_{step}_2"),
+                InlineKeyboardButton.WithCallbackData("۳", $"tch_{step}_3"),
+                InlineKeyboardButton.WithCallbackData("۴", $"tch_{step}_4"),
+                InlineKeyboardButton.WithCallbackData("۵", $"tch_{step}_5")
             }
         });
+
         await bot.SendMessage(chatId, text, replyMarkup: keyboard);
     }
 
@@ -371,8 +361,10 @@ class Program
     {
         var state = UserStates[chatId];
         var buttons = new List<InlineKeyboardButton[]>();
+
         string[] codes = { "S1", "S2", "S3", "S4", "S5", "S6", "S7", "S8", "S9" };
-        string[] labels = { "مشارکت بالا", "روانی کلام", "دایره لغات بالا", "درک مطلب بالا", "دقت گرامری", "شنیداری خوب", "تلاش و پشتکار", "همکاری گروهی", "خلاقیت" };
+        string[] labels = { "مشارکت بالا", "روانی کلام", "دایره لغات بالا", "درک مطلب بالا",
+                            "دقت گرامری", "شنیداری خوب", "تلاش و پشتکار", "همکاری گروهی", "خلاقیت" };
 
         for (int i = 0; i < codes.Length; i++)
         {
@@ -381,39 +373,35 @@ class Program
         }
         buttons.Add(new[] { InlineKeyboardButton.WithCallbackData("✅ تمام", "str_done") });
 
-        await bot.SendMessage(chatId, "8. نقاط قوت (چند مورد انتخاب کنید):", replyMarkup: new InlineKeyboardMarkup(buttons));
+        await bot.SendMessage(chatId, "۸. نقاط قوت (چند مورد انتخاب کنید):",
+            replyMarkup: new InlineKeyboardMarkup(buttons));
     }
 
     static async Task AskFreeText(long chatId)
     {
         UserStates[chatId].WaitingForText = true;
-        await bot.SendMessage(chatId, "نظر متنی دارید؟ بنویسید یا کلمه خیر را بفرستید.");
+        await bot.SendMessage(chatId, "نظر متنی دارید؟ بنویسید یا کلمه «خیر» را بفرستید.");
     }
-    static void SaveFeedback(UserState state, long chatId)
+
+    static void SaveFeedback(UserState state)
     {
         try
         {
-            string fileName = "feedbacks.txt";
             string line = DateTime.Now.ToString("yyyy-MM-dd HH:mm") + " | ";
             line += "Role: " + state.Role + " | ";
             line += "Class: " + state.SelectedClassCode + " | ";
-
             if (state.Role == "teacher")
                 line += "StudentId: " + state.SelectedStudentId + " | ";
-
             line += "Answers: ";
             foreach (var ans in state.Answers)
                 line += ans.Key + "=" + ans.Value + ", ";
-
             if (state.Strengths.Count > 0)
                 line += " | Strengths: " + string.Join(",", state.Strengths);
-
             if (!string.IsNullOrEmpty(state.FreeText))
                 line += " | FreeText: " + state.FreeText;
-
             line += Environment.NewLine;
 
-            File.AppendAllText(fileName, line);
+            File.AppendAllText("feedbacks.txt", line);
             Console.WriteLine("فیدبک ذخیره شد.");
         }
         catch (Exception ex)
@@ -421,6 +409,7 @@ class Program
             Console.WriteLine("خطا در ذخیره: " + ex.Message);
         }
     }
+
     class UserState
     {
         public string Role = "";
@@ -428,7 +417,7 @@ class Program
         public Dictionary<int, string> Answers = new();
         public HashSet<string> Strengths = new();
         public bool WaitingForText = false;
-        public string FreeText = null;
+        public string? FreeText = null;
         public string SelectedClassCode = "";
         public long SelectedStudentId = 0;
     }
