@@ -1,4 +1,4 @@
-﻿using Telegram.Bot;
+using Telegram.Bot;
 using Telegram.Bot.Types;
 using Telegram.Bot.Types.Enums;
 using Telegram.Bot.Types.ReplyMarkups;
@@ -52,7 +52,8 @@ class Program
         bot.OnUpdate += OnUpdate;
         bot.OnError += (ex, src) => { Console.WriteLine(ex.Message); return Task.CompletedTask; };
 
-        Console.ReadLine();
+        // نگه داشتن برنامه همیشه روشن
+        await Task.Delay(Timeout.Infinite);
     }
 
     static async Task OnMessage(Message msg, UpdateType type)
