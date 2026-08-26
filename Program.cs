@@ -1,3 +1,8 @@
+using Google.Apis.Auth.OAuth2;
+using Google.Apis.Services;
+using Google.Apis.Sheets.v4;
+using Google.Apis.Sheets.v4.Data;
+using System.IO;
 using Telegram.Bot;
 using Telegram.Bot.Types;
 using Telegram.Bot.Types.Enums;
@@ -7,6 +12,9 @@ using System.Linq;
 
 class Program
 {
+    private static readonly string SpreadsheetId = "1xfFaeXRK5Q-sw_KMYSG5xpmCGlhRdMq3Fa46h3zKE2s";
+    private static readonly string CredentialsPath = "credentials.json";
+    private static SheetsService? sheetsService;
     private static string BotToken = "8840542620:AAFH7qbaeB7JAXK1wCMFYEawbBDPihKJh-0";
     private static TelegramBotClient bot = null!;
     private static ConcurrentDictionary<long, UserState> UserStates = new();
@@ -94,7 +102,7 @@ class Program
         {
             state.FreeText = text.ToLower() == "خیر" ? null : text;
             state.WaitingForText = false;
-            SaveFeedback(state);
+            await SaveFeedback(state);
             await bot.SendMessage(chatId, "✅ فیدبک شما ثبت شد. متشکریم!");
             UserStates.TryRemove(chatId, out _);
             return;
@@ -383,30 +391,95 @@ class Program
         await bot.SendMessage(chatId, "نظر متنی دارید؟ بنویسید یا کلمه «خیر» را بفرستید.");
     }
 
-    static void SaveFeedback(UserState state)
+    static async Task SaveFeedback(UserState state)
     {
         try
         {
-            string line = DateTime.Now.ToString("yyyy-MM-dd HH:mm") + " | ";
-            line += "Role: " + state.Role + " | ";
-            line += "Class: " + state.SelectedClassCode + " | ";
-            if (state.Role == "teacher")
-                line += "StudentId: " + state.SelectedStudentId + " | ";
-            line += "Answers: ";
-            foreach (var ans in state.Answers)
-                line += ans.Key + "=" + ans.Value + ", ";
-            if (state.Strengths.Count > 0)
-                line += " | Strengths: " + string.Join(",", state.Strengths);
-            if (!string.IsNullOrEmpty(state.FreeText))
-                line += " | FreeText: " + state.FreeText;
-            line += Environment.NewLine;
+            // اگر سرویس هنوز ساخته نشده، آن را بساز
+            if (sheetsService == null)
+            {
+                GoogleCredential credential;
+                using (var stream = new FileStream(CredentialsPath, FileMode.Open, FileAccess.Read))
+                {
+                    credential = GoogleCredential.FromStream(stream)
+                        .CreateScoped(SheetsService.Scope.Spreadsheets);
+                }
 
-            File.AppendAllText("feedbacks.txt", line);
-            Console.WriteLine("فیدبک ذخیره شد.");
+                sheetsService = new SheetsService(new BaseClientService.Initializer()
+                {
+                    HttpClientInitializer = credential,
+                    ApplicationName = "QualityMonitorBot"
+                });
+            }
+
+            var values = new List<object>();
+            string range;
+
+            if (state.Role == "student")
+            {
+                // فیدبک زبان‌آموز به مدرس
+                range = "Teacher_Feedback!A:M";
+
+                double average = 0;
+                int count = 0;
+                for (int i = 1; i <= 7; i++)
+                {
+                    if (state.Answers.ContainsKey(i) && double.TryParse(state.Answers[i], out double score))
+                    {
+                        average += score;
+                        count++;
+                    }
+                }
+                if (count > 0) average = Math.Round(average / count, 2);
+
+                values.Add(DateTime.Now.ToString("yyyy-MM-dd HH:mm"));
+                values.Add(state.SelectedClassCode);
+                values.Add(""); // آیدی مدرس (فعلاً خالی)
+                values.Add(""); // نام مدرس
+                values.Add(state.Answers.GetValueOrDefault(1, ""));
+                values.Add(state.Answers.GetValueOrDefault(2, ""));
+                values.Add(state.Answers.GetValueOrDefault(3, ""));
+                values.Add(state.Answers.GetValueOrDefault(4, ""));
+                values.Add(state.Answers.GetValueOrDefault(5, ""));
+                values.Add(state.Answers.GetValueOrDefault(6, ""));
+                values.Add(state.Answers.GetValueOrDefault(7, ""));
+                values.Add(average);
+                values.Add(state.FreeText ?? "");
+            }
+            else // teacher
+            {
+                // فیدبک مدرس به زبان‌آموز
+                range = "Student_Feedback!A:P";
+
+                values.Add(DateTime.Now.ToString("yyyy-MM-dd HH:mm"));
+                values.Add(state.SelectedClassCode);
+                values.Add(state.SelectedStudentId.ToString());
+                values.Add(""); // نام زبان‌آموز (فعلاً خالی)
+                values.Add(state.Answers.GetValueOrDefault(1, ""));
+                values.Add(state.Answers.GetValueOrDefault(2, ""));
+                values.Add(state.Answers.GetValueOrDefault(3, ""));
+                values.Add(state.Answers.GetValueOrDefault(4, ""));
+                values.Add(state.Answers.GetValueOrDefault(5, ""));
+                values.Add(state.Answers.GetValueOrDefault(6, ""));
+                values.Add(state.Answers.GetValueOrDefault(7, ""));
+                values.Add(string.Join(",", state.Strengths));
+                values.Add(state.Answers.GetValueOrDefault(9, ""));
+                values.Add(state.Answers.GetValueOrDefault(10, ""));
+                values.Add(state.Answers.GetValueOrDefault(11, ""));
+                values.Add(state.FreeText ?? "");
+            }
+
+            var valueRange = new ValueRange { Values = new List<IList<object>> { values } };
+
+            var request = sheetsService.Spreadsheets.Values.Append(valueRange, SpreadsheetId, range);
+            request.ValueInputOption = SpreadsheetsResource.ValuesResource.AppendRequest.ValueInputOptionEnum.USERENTERED;
+
+            await request.ExecuteAsync();
+            Console.WriteLine("فیدبک با موفقیت در گوگل شیت ذخیره شد.");
         }
         catch (Exception ex)
         {
-            Console.WriteLine("خطا در ذخیره: " + ex.Message);
+            Console.WriteLine("خطا در ذخیره گوگل شیت: " + ex.Message);
         }
     }
 
