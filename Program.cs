@@ -1,29 +1,28 @@
-using Google.Apis.Auth.OAuth2;
-using Google.Apis.Services;
-using Google.Apis.Sheets.v4;
-using Google.Apis.Sheets.v4.Data;
-using System.IO;
 using Telegram.Bot;
 using Telegram.Bot.Types;
 using Telegram.Bot.Types.Enums;
 using Telegram.Bot.Types.ReplyMarkups;
 using System.Collections.Concurrent;
 using System.Linq;
+using Google.Apis.Auth.OAuth2;
+using Google.Apis.Services;
+using Google.Apis.Sheets.v4;
+using Google.Apis.Sheets.v4.Data;
+using System.IO;
 
 class Program
 {
-    private static readonly string SpreadsheetId = "1xfFaeXRK5Q-sw_KMYSG5xpmCGlhRdMq3Fa46h3zKE2s";
-    private static readonly string CredentialsPath = "credentials.json";
-    private static SheetsService? sheetsService;
     private static string BotToken = "8840542620:AAFH7qbaeB7JAXK1wCMFYEawbBDPihKJh-0";
     private static TelegramBotClient bot = null!;
     private static ConcurrentDictionary<long, UserState> UserStates = new();
 
-    // لیست Staff (مدرس + ادمین + کارشناس)
+    private static readonly string SpreadsheetId = "1xfFaeXRK5Q-sw_KMYSG5xpmCGlhRdMq3Fa46h3zKE2s";
+    private static SheetsService? sheetsService;
+
     private static HashSet<long> StaffIds = new HashSet<long>()
     {
-        107592700,   // علی هراتی‌بندی
-        // آیدی بقیه Staff را اینجا اضافه کن
+        107592700, // علی هراتی‌بندی
+        // بقیه Staff را اینجا اضافه کن
     };
 
     class ClassInfo
@@ -45,7 +44,7 @@ class Program
 
     static async Task Main()
     {
-        // ---------- کلاس نمونه ----------
+        // کلاس نمونه
         var sampleClass = new ClassInfo
         {
             GroupChatId = -1004349341642,
@@ -53,8 +52,10 @@ class Program
             TeacherTelegramId = 107592700,
             TeacherName = "Ali Haratibandi"
         };
-        sampleClass.Students.Add(new StudentInfo { TelegramId = 156246610, FullName = "Maryam" });
         Classes.Add(sampleClass);
+
+        // بارگذاری زبان‌آموزان از گوگل شیت
+        await LoadStudentsFromSheet();
 
         bot = new TelegramBotClient(BotToken);
         var me = await bot.GetMe();
@@ -64,8 +65,68 @@ class Program
         bot.OnUpdate += OnUpdate;
         bot.OnError += (ex, src) => { Console.WriteLine(ex.Message); return Task.CompletedTask; };
 
-        // برای Railway و سرورهای ابری
         await Task.Delay(Timeout.Infinite);
+    }
+
+    static async Task LoadStudentsFromSheet()
+    {
+        try
+        {
+            await EnsureSheetsService();
+
+            var request = sheetsService!.Spreadsheets.Values.Get(SpreadsheetId, "Students!A:D");
+            var response = await request.ExecuteAsync();
+            var values = response.Values;
+
+            if (values == null || values.Count <= 1) return;
+
+            foreach (var row in values.Skip(1))
+            {
+                if (row.Count < 4) continue;
+
+                string classCode = row[0]?.ToString() ?? "";
+                long groupId = long.TryParse(row[1]?.ToString(), out long g) ? g : 0;
+                long studentId = long.TryParse(row[2]?.ToString(), out long s) ? s : 0;
+                string fullName = row[3]?.ToString() ?? "";
+
+                if (studentId == 0) continue;
+
+                var cls = Classes.FirstOrDefault(c => c.ClassCode == classCode || c.GroupChatId == groupId);
+                if (cls == null) continue;
+
+                if (!cls.Students.Any(st => st.TelegramId == studentId))
+                {
+                    cls.Students.Add(new StudentInfo { TelegramId = studentId, FullName = fullName });
+                }
+            }
+
+            Console.WriteLine("لیست زبان‌آموزان از گوگل شیت بارگذاری شد.");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine("خطا در بارگذاری زبان‌آموزان: " + ex.Message);
+        }
+    }
+
+    static async Task EnsureSheetsService()
+    {
+        if (sheetsService != null) return;
+
+        string jsonCredentials = Environment.GetEnvironmentVariable("GOOGLE_CREDENTIALS") ?? "";
+        if (string.IsNullOrEmpty(jsonCredentials))
+        {
+            Console.WriteLine("خطا: متغیر GOOGLE_CREDENTIALS پیدا نشد.");
+            return;
+        }
+
+        GoogleCredential credential = GoogleCredential.FromJson(jsonCredentials)
+            .CreateScoped(SheetsService.Scope.Spreadsheets);
+
+        sheetsService = new SheetsService(new BaseClientService.Initializer()
+        {
+            HttpClientInitializer = credential,
+            ApplicationName = "QualityMonitorBot"
+        });
     }
 
     static async Task OnMessage(Message msg, UpdateType type)
@@ -79,7 +140,7 @@ class Program
 
         Console.WriteLine($"ChatId: {chatId} | UserId: {userId} | From: {fullName} | Text: {text}");
 
-        // === ثبت خودکار زبان‌آموز در گروه ===
+        // ثبت خودکار زبان‌آموز
         if (msg.Chat.Type == ChatType.Group || msg.Chat.Type == ChatType.Supergroup)
         {
             var currentClass = Classes.FirstOrDefault(c => c.GroupChatId == chatId);
@@ -87,12 +148,23 @@ class Program
             {
                 if (!currentClass.Students.Any(s => s.TelegramId == userId))
                 {
-                    currentClass.Students.Add(new StudentInfo
+                    currentClass.Students.Add(new StudentInfo { TelegramId = userId, FullName = fullName.Trim() });
+                    Console.WriteLine("زبان‌آموز جدید ثبت شد: " + fullName);
+
+                    // ذخیره در گوگل شیت
+                    try
                     {
-                        TelegramId = userId,
-                        FullName = fullName.Trim()
-                    });
-                    Console.WriteLine("زبان‌آموز جدید ثبت شد: " + fullName + " (" + userId + ")");
+                        await EnsureSheetsService();
+                        var values = new List<object> { currentClass.ClassCode, currentClass.GroupChatId, userId, fullName.Trim() };
+                        var valueRange = new ValueRange { Values = new List<IList<object>> { values } };
+                        var appendRequest = sheetsService!.Spreadsheets.Values.Append(valueRange, SpreadsheetId, "Students!A:D");
+                        appendRequest.ValueInputOption = SpreadsheetsResource.ValuesResource.AppendRequest.ValueInputOptionEnum.USERENTERED;
+                        await appendRequest.ExecuteAsync();
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine("خطا در ذخیره زبان‌آموز: " + ex.Message);
+                    }
                 }
             }
         }
@@ -108,7 +180,6 @@ class Program
             return;
         }
 
-        // دستور /start با deep link
         if (text.StartsWith("/start"))
         {
             if (text.Contains("feedback_"))
@@ -123,12 +194,10 @@ class Program
 
                 if (userId == currentClass.TeacherTelegramId || StaffIds.Contains(userId))
                 {
-                    // مدرس است
                     await ShowStudentList(chatId, currentClass);
                 }
                 else if (currentClass.Students.Any(s => s.TelegramId == userId))
                 {
-                    // زبان‌آموز است
                     if (!UserStates.ContainsKey(chatId))
                         UserStates[chatId] = new UserState();
 
@@ -168,12 +237,8 @@ class Program
             var me = await bot.GetMe();
             var keyboard = new InlineKeyboardMarkup(new[]
             {
-                new[]
-                {
-                    InlineKeyboardButton.WithUrl("📝 ثبت فیدبک", $"https://t.me/{me.Username}?start=feedback_{currentClass.ClassCode}")
-                }
+                new[] { InlineKeyboardButton.WithUrl("📝 ثبت فیدبک", $"https://t.me/{me.Username}?start=feedback_{currentClass.ClassCode}") }
             });
-
             await bot.SendMessage(chatId, "برای ثبت فیدبک روی دکمه زیر کلیک کنید:", replyMarkup: keyboard);
         }
         else if (text == "/feedback")
@@ -190,15 +255,9 @@ class Program
                 var me = await bot.GetMe();
                 var keyboard = new InlineKeyboardMarkup(new[]
                 {
-                    new[]
-                    {
-                        InlineKeyboardButton.WithUrl("شروع فیدبک (خصوصی)", $"https://t.me/{me.Username}?start=feedback_{currentClass.ClassCode}")
-                    }
+                    new[] { InlineKeyboardButton.WithUrl("شروع فیدبک (خصوصی)", $"https://t.me/{me.Username}?start=feedback_{currentClass.ClassCode}") }
                 });
-
-                await bot.SendMessage(chatId,
-                    "برای جلوگیری از شلوغی گروه، لطفاً روی دکمه زیر کلیک کنید تا فیدبک را در چت خصوصی ادامه دهید:",
-                    replyMarkup: keyboard);
+                await bot.SendMessage(chatId, "برای جلوگیری از شلوغی گروه، لطفاً روی دکمه زیر کلیک کنید:", replyMarkup: keyboard);
             }
             else
             {
@@ -207,11 +266,8 @@ class Program
         }
         else
         {
-            // فقط در چت خصوصی جواب بده
             if (msg.Chat.Type == ChatType.Private)
-            {
                 await bot.SendMessage(chatId, "دستور ناشناخته است. از /feedback استفاده کنید.");
-            }
         }
     }
 
@@ -295,9 +351,7 @@ class Program
         var buttons = new List<InlineKeyboardButton[]>();
         foreach (var student in classInfo.Students)
         {
-            buttons.Add(new[] {
-                InlineKeyboardButton.WithCallbackData(student.FullName, "select_student_" + student.TelegramId)
-            });
+            buttons.Add(new[] { InlineKeyboardButton.WithCallbackData(student.FullName, "select_student_" + student.TelegramId) });
         }
 
         await bot.SendMessage(chatId, "زبان‌آموزی که می‌خواهید فیدبک دهید را انتخاب کنید:",
@@ -329,7 +383,6 @@ class Program
                 InlineKeyboardButton.WithCallbackData("۵", $"stu_{step}_5")
             }
         });
-
         await bot.SendMessage(chatId, text, replyMarkup: keyboard);
     }
 
@@ -361,7 +414,6 @@ class Program
                 InlineKeyboardButton.WithCallbackData("۵", $"tch_{step}_5")
             }
         });
-
         await bot.SendMessage(chatId, text, replyMarkup: keyboard);
     }
 
@@ -369,10 +421,8 @@ class Program
     {
         var state = UserStates[chatId];
         var buttons = new List<InlineKeyboardButton[]>();
-
         string[] codes = { "S1", "S2", "S3", "S4", "S5", "S6", "S7", "S8", "S9" };
-        string[] labels = { "مشارکت بالا", "روانی کلام", "دایره لغات بالا", "درک مطلب بالا",
-                            "دقت گرامری", "شنیداری خوب", "تلاش و پشتکار", "همکاری گروهی", "خلاقیت" };
+        string[] labels = { "مشارکت بالا", "روانی کلام", "دایره لغات بالا", "درک مطلب بالا", "دقت گرامری", "شنیداری خوب", "تلاش و پشتکار", "همکاری گروهی", "خلاقیت" };
 
         for (int i = 0; i < codes.Length; i++)
         {
@@ -381,8 +431,7 @@ class Program
         }
         buttons.Add(new[] { InlineKeyboardButton.WithCallbackData("✅ تمام", "str_done") });
 
-        await bot.SendMessage(chatId, "۸. نقاط قوت (چند مورد انتخاب کنید):",
-            replyMarkup: new InlineKeyboardMarkup(buttons));
+        await bot.SendMessage(chatId, "۸. نقاط قوت (چند مورد انتخاب کنید):", replyMarkup: new InlineKeyboardMarkup(buttons));
     }
 
     static async Task AskFreeText(long chatId)
@@ -395,35 +444,15 @@ class Program
     {
         try
         {
-            // اگر سرویس هنوز ساخته نشده، آن را بساز
-            if (sheetsService == null)
-            {
-                string jsonCredentials = Environment.GetEnvironmentVariable("GOOGLE_CREDENTIALS");
-
-                if (string.IsNullOrEmpty(jsonCredentials))
-                {
-                    Console.WriteLine("خطا: متغیر GOOGLE_CREDENTIALS پیدا نشد.");
-                    return;
-                }
-
-                GoogleCredential credential = GoogleCredential.FromJson(jsonCredentials)
-                    .CreateScoped(SheetsService.Scope.Spreadsheets);
-
-                sheetsService = new SheetsService(new BaseClientService.Initializer()
-                {
-                    HttpClientInitializer = credential,
-                    ApplicationName = "QualityMonitorBot"
-                });
-            }
+            await EnsureSheetsService();
+            if (sheetsService == null) return;
 
             var values = new List<object>();
             string range;
 
             if (state.Role == "student")
             {
-                // فیدبک زبان‌آموز به مدرس
                 range = "Teacher_Feedback!A:M";
-
                 double average = 0;
                 int count = 0;
                 for (int i = 1; i <= 7; i++)
@@ -438,8 +467,8 @@ class Program
 
                 values.Add(DateTime.Now.ToString("yyyy-MM-dd HH:mm"));
                 values.Add(state.SelectedClassCode);
-                values.Add(""); // آیدی مدرس (فعلاً خالی)
-                values.Add(""); // نام مدرس
+                values.Add("");
+                values.Add("");
                 values.Add(state.Answers.GetValueOrDefault(1, ""));
                 values.Add(state.Answers.GetValueOrDefault(2, ""));
                 values.Add(state.Answers.GetValueOrDefault(3, ""));
@@ -450,15 +479,13 @@ class Program
                 values.Add(average);
                 values.Add(state.FreeText ?? "");
             }
-            else // teacher
+            else
             {
-                // فیدبک مدرس به زبان‌آموز
                 range = "Student_Feedback!A:P";
-
                 values.Add(DateTime.Now.ToString("yyyy-MM-dd HH:mm"));
                 values.Add(state.SelectedClassCode);
                 values.Add(state.SelectedStudentId.ToString());
-                values.Add(""); // نام زبان‌آموز (فعلاً خالی)
+                values.Add("");
                 values.Add(state.Answers.GetValueOrDefault(1, ""));
                 values.Add(state.Answers.GetValueOrDefault(2, ""));
                 values.Add(state.Answers.GetValueOrDefault(3, ""));
@@ -474,10 +501,8 @@ class Program
             }
 
             var valueRange = new ValueRange { Values = new List<IList<object>> { values } };
-
             var request = sheetsService.Spreadsheets.Values.Append(valueRange, SpreadsheetId, range);
             request.ValueInputOption = SpreadsheetsResource.ValuesResource.AppendRequest.ValueInputOptionEnum.USERENTERED;
-
             await request.ExecuteAsync();
             Console.WriteLine("فیدبک با موفقیت در گوگل شیت ذخیره شد.");
         }
