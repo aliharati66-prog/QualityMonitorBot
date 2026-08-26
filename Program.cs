@@ -398,12 +398,16 @@ class Program
             // اگر سرویس هنوز ساخته نشده، آن را بساز
             if (sheetsService == null)
             {
-                GoogleCredential credential;
-                using (var stream = new FileStream(CredentialsPath, FileMode.Open, FileAccess.Read))
+                string jsonCredentials = Environment.GetEnvironmentVariable("GOOGLE_CREDENTIALS");
+
+                if (string.IsNullOrEmpty(jsonCredentials))
                 {
-                    credential = GoogleCredential.FromStream(stream)
-                        .CreateScoped(SheetsService.Scope.Spreadsheets);
+                    Console.WriteLine("خطا: متغیر GOOGLE_CREDENTIALS پیدا نشد.");
+                    return;
                 }
+
+                GoogleCredential credential = GoogleCredential.FromJson(jsonCredentials)
+                    .CreateScoped(SheetsService.Scope.Spreadsheets);
 
                 sheetsService = new SheetsService(new BaseClientService.Initializer()
                 {
